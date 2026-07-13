@@ -6,7 +6,7 @@
   "author": "frostime <frostime@foxmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/frostime/pi-acp.git"
+    "url": "git+https://github.com/frostime/pi-acp.git"
   },
   "publishConfig": {
     "access": "public",
@@ -31,7 +31,9 @@
     "pi-acp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "LICENSE-MIT"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
