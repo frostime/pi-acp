@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
+import { extensionCommandNames, toAvailableCommandsFromPiGetCommands, type PiRpcCommandInfo } from './pi-commands.js'
 import { SessionStore } from './session-store.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
@@ -38,14 +39,24 @@ type SessionCreateParams = {
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
 
+type TurnKind = 'agent' | 'extension'
+
 type PendingTurn = {
+  id: number
+  kind: TurnKind
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
+  promptResponseReceived: boolean
+  sawAgentStart: boolean
+  sawAgentEnd: boolean
+  checkingCompletion: boolean
+  finishing: boolean
 }
 
 type QueuedTurn = {
   message: string
   images: unknown[]
+  kind: TurnKind
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
@@ -58,6 +69,39 @@ const CONFIRM_PERMISSION_OPTIONS: PermissionOption[] = [
 ]
 const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder', 'prefill'] as const
 const CHOICE_OPTION_PREFIX = 'choice-'
+const EXTENSION_IDLE_CHECK_DELAYS_MS = [0, 25, 75] as const
+const EXTENSION_DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor'])
+const EXTENSION_FIRE_AND_FORGET_METHODS = new Set(['notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text'])
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function leadingSlashCommandName(text: string): string | null {
+  const match = text.trimStart().match(/^\/([^\s]+)(?:\s|$)/)
+  return match?.[1] ?? null
+}
+
+function isPiStateBusy(state: unknown): boolean {
+  const record = state as
+    | {
+        isStreaming?: unknown
+        isCompacting?: unknown
+        pendingMessageCount?: unknown
+      }
+    | null
+    | undefined
+
+  return (
+    record?.isStreaming === true ||
+    record?.isCompacting === true ||
+    (typeof record?.pendingMessageCount === 'number' && record.pendingMessageCount > 0)
+  )
+}
+
+function isExtensionDialogMethod(method: string | null): boolean {
+  return method !== null && EXTENSION_DIALOG_METHODS.has(method)
+}
 
 function findUniqueLineNumber(text: string, needle: string): number | undefined {
   if (!needle) return undefined
@@ -84,7 +128,7 @@ function getToolPath(args: unknown): string | undefined {
 
 // Match pi's current edit schema: { path, edits: [{ oldText, newText }] }, with
 // legacy top-level oldText/newText still accepted. Pi also normalizes stringified edits.
-// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/edit.ts
 function getParsedEdits(args: unknown): Array<{ oldText: string; newText: string }> {
   const record = args as { oldText?: unknown; newText?: unknown; edits?: unknown } | null | undefined
   const parsed: Array<{ oldText: string; newText: string }> = []
@@ -266,6 +310,9 @@ export class PiAcpSession {
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
   private readonly fileCommands: FileSlashCommand[]
+  private piCommandsLoaded = false
+  private piCommandsLoadPromise: Promise<void> | null = null
+  private extensionCommands = new Set<string>()
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -274,13 +321,14 @@ export class PiAcpSession {
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
   private readonly turnQueue: QueuedTurn[] = []
+  private nextTurnId = 1
   // Track tool call statuses and ensure they are monotonic (pending -> in_progress -> completed).
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
 
-  // pi can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
-  // The overall agent loop completes when `agent_end` is emitted.
+  // Pi can emit multiple `turn_end` events for one prompt. Track the broader agent
+  // loop until settlement; agent_end alone may be followed by retry or compaction.
   private inAgentLoop = false
 
   // For ACP diff support: capture file contents before edit/write mutations,
@@ -318,6 +366,36 @@ export class PiAcpSession {
     this.startupInfoSent = false
   }
 
+  setPiCommands(commands: PiRpcCommandInfo[]): void {
+    this.extensionCommands = extensionCommandNames(commands)
+    this.piCommandsLoaded = true
+  }
+
+  async ensurePiCommandsLoaded(): Promise<void> {
+    if (this.piCommandsLoaded) return
+    if (this.piCommandsLoadPromise) return this.piCommandsLoadPromise
+
+    this.piCommandsLoadPromise = this.proc
+      .getCommands()
+      .then(data => {
+        const { raw } = toAvailableCommandsFromPiGetCommands(data)
+        this.setPiCommands(raw)
+      })
+      .catch(() => {
+        // Command discovery is best-effort. The scheduled session update may retry later.
+      })
+      .finally(() => {
+        this.piCommandsLoadPromise = null
+      })
+
+    return this.piCommandsLoadPromise
+  }
+
+  isExtensionCommand(message: string): boolean {
+    const name = leadingSlashCommandName(message)
+    return name !== null && this.extensionCommands.has(name)
+  }
+
   /**
    * Best-effort attempt to send startup info outside of a prompt turn.
    * Some clients (e.g. Zed) may only render agent messages once the UI is ready;
@@ -334,11 +412,14 @@ export class PiAcpSession {
   }
 
   async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
-    // pi RPC mode disables slash command expansion, so we do it here.
-    const expandedMessage = expandSlashCommand(message, this.fileCommands)
+    if (leadingSlashCommandName(message)) await this.ensurePiCommandsLoaded()
+
+    const kind: TurnKind = this.isExtensionCommand(message) ? 'extension' : 'agent'
+    // Pi expands extension commands itself. File prompt templates are expanded adapter-side.
+    const expandedMessage = kind === 'extension' ? message : expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, kind, resolve, reject }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -474,7 +555,18 @@ export class PiAcpSession {
     this.cancelRequested = false
     this.inAgentLoop = false
 
-    this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    const turnId = this.nextTurnId++
+    this.pendingTurn = {
+      id: turnId,
+      kind: t.kind,
+      resolve: t.resolve,
+      reject: t.reject,
+      promptResponseReceived: false,
+      sawAgentStart: false,
+      sawAgentEnd: false,
+      checkingCompletion: false,
+      finishing: false
+    }
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -482,33 +574,115 @@ export class PiAcpSession {
       _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
     })
 
-    // Kick off pi, but completion is determined by pi events, not the RPC response.
-    // Important: pi may emit multiple `turn_end` events (e.g. when the model requests tools).
-    // The full prompt is finished when we see `agent_end`.
-    this.proc.prompt(t.message, t.images).catch(err => {
-      // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
-      // Also ensure we flush any already-enqueued updates first.
-      void this.flushEmits().finally(() => {
-        // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
-        const authErr = maybeAuthRequiredError(err)
-        if (authErr) {
-          this.pendingTurn?.reject(authErr)
-        } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
+    void this.proc
+      .prompt(t.message, t.images)
+      .then(() => this.handlePromptResponse(turnId))
+      .catch(err => this.failTurn(turnId, err))
+  }
+
+  private handlePromptResponse(turnId: number): void {
+    const turn = this.pendingTurn
+    if (!turn || turn.id !== turnId || turn.finishing) return
+
+    turn.promptResponseReceived = true
+
+    // Extension handlers may complete without ever starting the agent. In that case
+    // Pi emits no agent_end event, so reconcile against the RPC state after the
+    // handler's prompt response returns.
+    if (turn.kind === 'extension') void this.reconcileTurnCompletion(turnId)
+  }
+
+  private async reconcileTurnCompletion(turnId: number): Promise<void> {
+    const initial = this.pendingTurn
+    if (!initial || initial.id !== turnId || initial.finishing || initial.checkingCompletion) return
+
+    initial.checkingCompletion = true
+
+    try {
+      for (const delayMs of EXTENSION_IDLE_CHECK_DELAYS_MS) {
+        if (delayMs > 0) await sleep(delayMs)
+
+        const turn = this.pendingTurn
+        if (!turn || turn.id !== turnId || turn.finishing) return
+
+        if (this.inAgentLoop || this.currentToolCalls.size > 0) return
+
+        try {
+          const state = await this.proc.getState()
+          if (isPiStateBusy(state)) return
+        } catch {
+          // Local event state plus a short grace period is still a useful fallback
+          // for older or temporarily unavailable Pi RPC implementations.
         }
+      }
 
-        this.pendingTurn = null
-        this.inAgentLoop = false
+      const turn = this.pendingTurn
+      if (!turn || turn.id !== turnId || turn.finishing) return
 
-        // If the prompt failed, do not automatically proceed—pi may be unhealthy.
-        // But we still clear the queueDepth metadata.
-        this.emit({
-          sessionUpdate: 'session_info_update',
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
-        })
+      if (turn.kind === 'extension' && !turn.promptResponseReceived) return
+      if (turn.kind === 'agent' && !turn.sawAgentEnd) return
+
+      const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+      await this.finishTurn(turnId, reason)
+    } finally {
+      const turn = this.pendingTurn
+      if (turn?.id === turnId) turn.checkingCompletion = false
+    }
+  }
+
+  private async finishTurn(turnId: number, reason: StopReason): Promise<void> {
+    const turn = this.pendingTurn
+    if (!turn || turn.id !== turnId || turn.finishing) return
+
+    turn.finishing = true
+    await this.flushEmits()
+
+    if (this.pendingTurn !== turn) return
+
+    this.pendingTurn = null
+    this.inAgentLoop = false
+    turn.resolve(reason)
+
+    const next = this.turnQueue.shift()
+    if (next) {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
       })
-      void err
+      this.startTurn(next)
+      return
+    }
+
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      _meta: { piAcp: { queueDepth: 0, running: false } }
+    })
+  }
+
+  private async failTurn(turnId: number, err: unknown): Promise<void> {
+    const turn = this.pendingTurn
+    if (!turn || turn.id !== turnId || turn.finishing) return
+
+    turn.finishing = true
+    await this.flushEmits()
+
+    if (this.pendingTurn !== turn) return
+
+    const authErr = maybeAuthRequiredError(err)
+    if (authErr) {
+      turn.reject(authErr)
+    } else {
+      turn.resolve(this.cancelRequested ? 'cancelled' : 'error')
+    }
+
+    this.pendingTurn = null
+    this.inAgentLoop = false
+
+    // Preserve the existing failure policy: do not automatically start queued
+    // prompts because the Pi subprocess may no longer be healthy.
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
     })
   }
 
@@ -770,9 +944,8 @@ export class PiAcpSession {
       case 'extension_ui_request': {
         void this.handleExtensionUiRequest(ev).catch(() => {
           const id = stringProp(ev, 'id')
-          if (!id) {
-            return
-          }
+          const method = stringProp(ev, 'method')
+          if (!id || !isExtensionDialogMethod(method)) return
 
           void this.proc.sendExtensionUiResponse({ id, cancelled: true }).catch(() => {})
         })
@@ -819,6 +992,7 @@ export class PiAcpSession {
 
       case 'agent_start': {
         this.inAgentLoop = true
+        if (this.pendingTurn) this.pendingTurn.sawAgentStart = true
         break
       }
 
@@ -829,29 +1003,29 @@ export class PiAcpSession {
       }
 
       case 'agent_end': {
-        // Ensure all updates derived from pi events are delivered before we resolve
-        // the ACP `session/prompt` request.
-        void this.flushEmits().finally(() => {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-          this.pendingTurn?.resolve(reason)
-          this.pendingTurn = null
-          this.inAgentLoop = false
+        this.inAgentLoop = false
 
-          // Start next queued prompt, if any.
-          const next = this.turnQueue.shift()
-          if (next) {
-            this.emit({
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
-            })
-            this.startTurn(next)
-          } else {
-            this.emit({
-              sessionUpdate: 'session_info_update',
-              _meta: { piAcp: { queueDepth: 0, running: false } }
-            })
-          }
-        })
+        const turn = this.pendingTurn
+        if (!turn) break
+
+        turn.sawAgentEnd = true
+        if ((ev as { willRetry?: unknown }).willRetry === true) break
+
+        // Newer Pi versions follow agent_end with agent_settled. The state-based
+        // reconciliation also keeps compatibility with versions that only emit agent_end.
+        void this.reconcileTurnCompletion(turn.id)
+        break
+      }
+
+      case 'agent_settled': {
+        this.inAgentLoop = false
+
+        const turn = this.pendingTurn
+        if (!turn || !turn.sawAgentStart || !turn.sawAgentEnd) break
+        if (turn.kind === 'extension' && !turn.promptResponseReceived) break
+
+        const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+        void this.finishTurn(turn.id, reason)
         break
       }
 
@@ -863,9 +1037,18 @@ export class PiAcpSession {
   private async handleExtensionUiRequest(ev: PiRpcEvent): Promise<void> {
     const id = stringProp(ev, 'id')
     const method = stringProp(ev, 'method')
-    if (!id) {
+
+    if (method === 'notify') {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock
+      })
       return
     }
+
+    if (method !== null && EXTENSION_FIRE_AND_FORGET_METHODS.has(method)) return
+
+    if (!id) return
 
     if (method === 'select') {
       await this.handleExtensionSelect(ev, id)
@@ -884,15 +1067,6 @@ export class PiAcpSession {
           type: 'text',
           text: `Pi ${method} UI request is not supported in ACP yet; cancelling it.`
         } satisfies ContentBlock
-      })
-      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
-      return
-    }
-
-    if (method === 'notify') {
-      this.emit({
-        sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock
       })
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return

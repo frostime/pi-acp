@@ -58,3 +58,38 @@ test('PiAcpAgent: /name sets session display name adapter-side', async () => {
   const last = conn.updates.at(-1)
   assert.match((last as any).update.content.text, /Session name set: My Session/)
 })
+
+test('PiAcpAgent: Pi extension command takes priority over same-name adapter built-in', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess() as any
+  let forwarded: string | null = null
+  let setNameCalled = false
+
+  proc.setSessionName = async () => {
+    setNameCalled = true
+  }
+
+  const session = {
+    sessionId: 's1',
+    proc,
+    ensurePiCommandsLoaded: async () => {},
+    isExtensionCommand: (message: string) => message.startsWith('/name'),
+    prompt: async (message: string) => {
+      forwarded = message
+      return 'end_turn'
+    },
+    wasCancelRequested: () => false
+  }
+
+  const agent = new PiAcpAgent(asAgentConn(conn))
+  ;(agent as any).sessions = new FakeSessions(session) as any
+
+  const res = await agent.prompt({
+    sessionId: 's1',
+    prompt: [{ type: 'text', text: '/name extension-value' }]
+  } as any)
+
+  assert.equal(res.stopReason, 'end_turn')
+  assert.equal(forwarded, '/name extension-value')
+  assert.equal(setNameCalled, false)
+})

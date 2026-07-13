@@ -24,6 +24,7 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
   })
 
   const p = session.prompt('/hello world')
+  await new Promise(resolve => setTimeout(resolve, 0))
 
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'turn_end' })

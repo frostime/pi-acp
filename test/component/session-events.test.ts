@@ -809,6 +809,7 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
   })
 
   const p = session.prompt('/hello world')
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(proc.prompts.length, 1)
   assert.equal(proc.prompts[0]!.message, 'Say hello to world')
 
@@ -818,4 +819,185 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
 
   const reason = await p
   assert.equal(reason, 'end_turn')
+})
+
+test('PiAcpSession: completes a pure extension command without agent events', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  session.setPiCommands([{ name: 'inspect', description: 'Inspect', source: 'extension' }])
+
+  const reason = await session.prompt('/inspect')
+
+  assert.equal(reason, 'end_turn')
+  assert.deepEqual(proc.prompts, [{ message: '/inspect', attachments: [] }])
+})
+
+test('PiAcpSession: extension command takes priority over a same-name file prompt', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [
+      {
+        name: 'inspect',
+        description: 'file prompt',
+        content: 'expanded file prompt',
+        source: '(project)'
+      }
+    ]
+  })
+
+  session.setPiCommands([{ name: 'inspect', description: 'Inspect', source: 'extension' }])
+
+  const reason = await session.prompt('/inspect')
+
+  assert.equal(reason, 'end_turn')
+  assert.equal(proc.prompts[0]?.message, '/inspect')
+})
+
+test('PiAcpSession: extension-triggered agent turn waits for agent_settled', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  proc.state = { isStreaming: true, isCompacting: false, pendingMessageCount: 0 }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  session.setPiCommands([{ name: 'turn', description: 'Start turn', source: 'extension' }])
+
+  let completed = false
+  const prompt = session.prompt('/turn').then(reason => {
+    completed = true
+    return reason
+  })
+
+  await new Promise(resolve => setTimeout(resolve, 0))
+  proc.emit({ type: 'agent_start' })
+  await new Promise(resolve => setTimeout(resolve, 125))
+  assert.equal(completed, false)
+
+  proc.state = { isStreaming: false, isCompacting: false, pendingMessageCount: 0 }
+  proc.emit({ type: 'agent_end', willRetry: false })
+  proc.emit({ type: 'agent_settled' })
+
+  assert.equal(await prompt, 'end_turn')
+})
+
+test('PiAcpSession: fire-and-forget extension UI requests do not send responses', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'extension_ui_request', id: 'n1', method: 'notify', message: 'hello' })
+  proc.emit({ type: 'extension_ui_request', id: 's1', method: 'setStatus', statusKey: 'x', statusText: 'busy' })
+  proc.emit({ type: 'extension_ui_request', id: 'w1', method: 'setWidget', widgetKey: 'x', widgetLines: ['x'] })
+  proc.emit({ type: 'extension_ui_request', id: 't1', method: 'setTitle', title: 'title' })
+  proc.emit({ type: 'extension_ui_request', id: 'e1', method: 'set_editor_text', text: 'draft' })
+
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(proc.extensionUiResponses, [])
+  assert.equal(conn.updates.length, 1)
+  assert.deepEqual(conn.updates[0]?.update, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'hello' }
+  })
+})
+
+test('PiAcpSession: agent_end with willRetry waits for the final settled run', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  let completed = false
+  const prompt = session.prompt('retry me').then(reason => {
+    completed = true
+    return reason
+  })
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end', willRetry: true })
+  await new Promise(resolve => setTimeout(resolve, 125))
+  assert.equal(completed, false)
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end', willRetry: false })
+  proc.emit({ type: 'agent_settled' })
+
+  assert.equal(await prompt, 'end_turn')
+})
+
+test('PiAcpSession: extension waits for its RPC prompt response even if agent_settled arrives first', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  let releasePromptResponse: (() => void) | undefined
+  proc.prompt = async (message: string, attachments: unknown[]) => {
+    proc.prompts.push({ message, attachments })
+    await new Promise<void>(resolve => {
+      releasePromptResponse = resolve
+    })
+    return
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  session.setPiCommands([{ name: 'turn', description: 'Start turn', source: 'extension' }])
+
+  let completed = false
+  const prompt = session.prompt('/turn').then(reason => {
+    completed = true
+    return reason
+  })
+
+  await new Promise(resolve => setTimeout(resolve, 0))
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end', willRetry: false })
+  proc.emit({ type: 'agent_settled' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(completed, false)
+
+  assert.ok(releasePromptResponse)
+  releasePromptResponse()
+
+  assert.equal(await prompt, 'end_turn')
 })

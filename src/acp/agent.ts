@@ -396,10 +396,11 @@ export class PiAcpAgent implements ACPAgent {
       void (async () => {
         try {
           const pi = (await session.proc.getCommands()) as any
-          const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
+          const { commands, raw } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
+          session.setPiCommands(raw)
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
@@ -438,15 +439,18 @@ export class PiAcpAgent implements ACPAgent {
     const { message, images } = promptToPiMessage(params.prompt)
 
     // Built-in ACP slash command handling (headless-friendly subset).
-    // Note: file-based slash commands are expanded inside session.prompt().
+    // Pi extension commands take priority when they collide with adapter built-ins.
     if (images.length === 0 && message.trimStart().startsWith('/')) {
+      await (session as any).ensurePiCommandsLoaded?.()
+      const isPiExtensionCommand = (session as any).isExtensionCommand?.(message) === true
+
       const trimmed = message.trim()
       const space = trimmed.indexOf(' ')
       const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)
       const argsString = space === -1 ? '' : trimmed.slice(space + 1)
       const args = parseCommandArgs(argsString)
 
-      if (cmd === 'compact') {
+      if (!isPiExtensionCommand && cmd === 'compact') {
         const customInstructions = args.join(' ').trim() || undefined
         const res = await session.proc.compact(customInstructions)
 
@@ -472,7 +476,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'session') {
+      if (!isPiExtensionCommand && cmd === 'session') {
         const stats = (await session.proc.getSessionStats()) as any
 
         const lines: string[] = []
@@ -507,7 +511,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'name') {
+      if (!isPiExtensionCommand && cmd === 'name') {
         const name = args.join(' ').trim()
         if (!name) {
           await this.conn.sessionUpdate({
@@ -558,7 +562,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'steering') {
+      if (!isPiExtensionCommand && cmd === 'steering') {
         const modeRaw = String(args[0] ?? '').toLowerCase()
         const state = (await session.proc.getState()) as any
         const current = String(state?.steeringMode ?? '')
@@ -605,7 +609,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'follow-up') {
+      if (!isPiExtensionCommand && cmd === 'follow-up') {
         const modeRaw = String(args[0] ?? '').toLowerCase()
         const state = (await session.proc.getState()) as any
         const current = String(state?.followUpMode ?? '')
@@ -652,7 +656,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'changelog') {
+      if (!isPiExtensionCommand && cmd === 'changelog') {
         // Read pi's installed CHANGELOG.md. Adapter-side, no model call.
         const findChangelog = (): string | null => {
           // 1) Locate the installed pi package by resolving the `pi` executable.
@@ -730,7 +734,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'export') {
+      if (!isPiExtensionCommand && cmd === 'export') {
         // For now we always export into the session cwd and do not accept a user-provided path.
         // IMPORTANT: pi's export_html reads the session JSONL file. If it doesn't exist yet
         // (no messages) or is empty, pi throws and RPC mode emits an uncorrelated parse error
@@ -849,7 +853,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'autocompact') {
+      if (!isPiExtensionCommand && cmd === 'autocompact') {
         const mode = (args[0] ?? 'toggle').toLowerCase()
         let enabled: boolean | null = null
         if (mode === 'on' || mode === 'true' || mode === 'enable' || mode === 'enabled') enabled = true
@@ -1075,10 +1079,11 @@ export class PiAcpAgent implements ACPAgent {
       void (async () => {
         try {
           const pi = (await proc.getCommands()) as any
-          const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
+          const { commands, raw } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false
+            includeExtensionCommands: true
           })
+          session.setPiCommands(raw)
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,

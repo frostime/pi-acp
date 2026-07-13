@@ -1,79 +1,55 @@
-# pi-acp (ACP adapter for pi-coding-agent)
+# pi-acp maintenance instructions
 
-This repository implements an **Agent Client Protocol (ACP)** adapter for **pi** (`@earendil-works/pi-coding-agent`) without modifying pi.
+`pi-acp` is an Agent Client Protocol (ACP) adapter for Pi(`@earendil-works/pi-coding-agent`). It speaks ACP JSON-RPC over its own stdio and runs one `pi --mode rpc` subprocess per ACP session.
 
-- ACP side: **JSON-RPC 2.0 over stdio** using `@agentclientprotocol/sdk` (TypeScript)
-- Pi side: spawn `pi --mode rpc` and communicate via **newline-delimited JSON** over stdio
+## Read before changing code
 
-## Architecture (MVP)
+Start with [`docs/index.md`](docs/index.md). Read the documents selected there rather than reconstructing cross-cutting behavior from scattered code.
 
-### 1 ACP session ↔ 1 pi subprocess
+Mandatory reading by change type:
 
-Pi RPC mode is effectively single-session, so the adapter maps:
+- Slash-command discovery, dispatch, prompt completion, queueing, cancellation, or extension UI: [`src/acp/SPEC.md`](src/acp/SPEC.md).
+- Pi, ACP SDK, or Zed compatibility work: [`docs/upstream-compatibility.md`](docs/upstream-compatibility.md).
+- Testing, debugging, release checks, or upgrade verification: [`docs/validation.md`](docs/validation.md).
 
-- `session/new` → spawn a dedicated `pi --mode rpc` process
-- `session/prompt` → send `{type:"prompt"}` to that process and stream events back as `session/update`
-- `session/cancel` → send `{type:"abort"}`
+## Source-of-truth order
 
-### ACP server wiring (modeled after opencode)
+1. This repository's tests and types define the behavior currently implemented here.
+2. [`src/acp/SPEC.md`](src/acp/SPEC.md) defines the maintenance contract that refactors must preserve.
+3. Upstream protocol types and runtime code define current external behavior. Documentation is a navigation aid, not a substitute for checking implementation when compatibility changes.
+4. README content is user-facing and must not override the contract or code.
 
-Use `@agentclientprotocol/sdk`:
+If code and the SPEC disagree on externally observable behavior, compatibility, lifecycle, or invariants, stop and report the conflict before changing either one casually.
 
-- `ndJsonStream(input, output)` to speak ACP over stdio
-- `new AgentSideConnection((conn) => new PiAcpAgent(conn, config), stream)`
+## Architecture boundaries
 
-## Implementation constraints / decisions
+- `src/acp/*`: ACP-facing behavior and translation.
+- `src/pi-rpc/*`: Pi subprocess and JSONL RPC transport.
+- Pi owns agent/session logic; this adapter must not reimplement Pi command handlers.
+- ACP stdout must remain strict protocol output. Never write diagnostic text, ANSI control sequences, or TUI rendering to stdout.
+- External/custom TUI rendering is outside this package. This adapter only preserves the Pi command and prompt lifecycle that such an integration depends on.
 
-- Do **not** implement ACP client-side FS/terminal delegation in MVP. Pi already reads/writes and executes locally.
-- Ignore `mcpServers` for MVP (accept in params, store in session state).
-- Stream all pi assistant output as ACP `agent_message_chunk` initially.
-- Tool events: map pi tool execution events to ACP `tool_call` / `tool_call_update` (as text content).
+## Change discipline
 
-## Dev workflow (to be filled once scaffold exists)
-
-- Install deps: `npm install`
-- Run in dev: `npm run dev`
-- Build: `npm run build`
-- Smoke test (stdio): `npm run smoke`
-- Lint: `npm run lint`
-- Test: `npm run test`
-
-## Manual testing notes
-
-Once the adapter runs, it should behave like an ACP agent on stdio.
-
-Quick sanity test (example):
-
-```bashN
-# Send initialize request via stdin (exact fields depend on ACP SDK version)
-# echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' | node dist/index.js
-```
-
-For real validation, test with an ACP client (e.g. Zed external agent).
-
-## Coding guidelines
-
-- Keep ACP protocol handling in `src/acp/*`.
-- Keep pi RPC subprocess logic in `src/pi-rpc/*`.
-- Prefer small translation functions (pi event → ACP session/update) with unit tests.
-- Be strict about streaming and process cleanup (handle exit, drain stdout/stderr, timeouts).
-- Avoid producing unnecessary comments! Use comments sparingly to explain non-obvious decisions, not to narrate code.
-- Avoid using `any` in TypeScript; prefer explicit types and interfaces. Only use `any` when absolutely necessary (e.g. for untyped external data).
+- Preserve command-source information until dispatch. A command's name alone is insufficient for collision handling.
+- Do not infer prompt completion from a single Pi event without checking the lifecycle contract.
+- Associate delayed checks and callbacks with the active turn ID; stale work must not finish a later queued turn.
+- Treat extension UI dialogs and fire-and-forget notifications as different protocols.
+- Prefer tolerant parsing at upstream JSON boundaries and strict internal types after normalization.
+- Use local comments only for sequencing, compatibility, or rationale that is not obvious from the code.
+- Do not commit unless explicitly asked.
 
 ## Validation
 
-- After making code edits, run formatting before finishing the task. Use `npm run format` when it is safe to format the whole worktree; otherwise use the narrowest safe formatter command for the files you touched.
-- If formatting is skipped or fails, say so explicitly in the final response.
+After code changes, run the applicable focused tests, then the full sequence documented in [`docs/validation.md`](docs/validation.md). At minimum before handoff:
 
-## Source control
+```bash
+npm run format
+npm run typecheck
+npm run lint
+npm test
+npm run build
+git diff --check
+```
 
-- **DO NOT** commit unless explicitly asked!
-
-## Client information
-
-- Current ACP client is Zed
-
-## References
-
-- Local ACP repo with protocol documentation and specs: `~/Dev/learning/agent-client-protocol`
-- Local Zed repo `~/Dev/learning/zed/zed`
+When a Pi update is involved, the normal test suite is not sufficient. Run the compatibility checkpoints and end-to-end scenarios in the validation guide.

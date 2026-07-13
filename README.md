@@ -22,6 +22,7 @@ Expect some minor breaking changes.
   - pi stores its own sessions in `~/.pi/agent/sessions/...`
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
 - Slash commands
+  - Advertises Pi extension commands discovered through RPC and forwards them to Pi unchanged
   - Loads file-based slash commands compatible with pi’s conventions
   - Adds a small set of built-in commands for headless/editor usage
   - Supports skill commands (if enabled in pi settings, they appear as `/skill:skill-name` in the ACP client)
@@ -134,14 +135,20 @@ You can add the environment variable in the Zed settings with:
 
 `pi-acp` supports slash commands:
 
-#### 1) File-based commands (aka prompts)
+#### 1) Pi extension commands
+
+Commands registered by Pi extensions are discovered through Pi RPC, advertised to the ACP client, and forwarded to Pi unchanged. If an extension command has the same name as a pi-acp built-in or a file prompt, the extension command takes priority.
+
+An extension command may complete without starting an LLM turn. `pi-acp` reconciles the Pi RPC state so these commands do not remain stuck waiting for an `agent_end` event. Extensions that start an agent run are kept active until the agent settles.
+
+#### 2) File-based commands (aka prompts)
 
 Loaded from:
 
 - User commands: `~/.pi/agent/prompts/**/*.md`
 - Project commands: `<cwd>/.pi/prompts/**/*.md`
 
-#### 2) Built-in commands
+#### 3) Built-in commands
 
 - `/compact [instructions...]` – run pi compaction (optionally with custom instructions)
 - `/autocompact on|off|toggle` – toggle automatic compaction
@@ -151,7 +158,7 @@ Loaded from:
 - `/queue all|one-at-a-time` – set pi queue mode (unstable feature)
 - `/changelog` – print the installed pi changelog (best-effort)
 - `/steering` - maps to `pi` Steering Mode, get/set
-- `/follow-up` - pats to `pi` Follow-up Mode, get/set
+- `/follow-up` - maps to `pi` Follow-up Mode, get/set
 
 Other built-in commands:
 
@@ -159,11 +166,9 @@ Other built-in commands:
 - `/thinking` - maps to 'mode' selector in Zed
 - `/clear` - not implemented (use ACP client 'new' command)
 
-#### 3) Skill commands
+#### 4) Skill commands
 
 - Skill commands can be enabled in pi settings and will appear in the slash command list in ACP client as `/skill:skill-name`.
-
-**Note**: Slash commands provided by pi extensions are not currently supported.
 
 ## Authentication (ACP Registry support)
 
@@ -192,13 +197,16 @@ Project layout:
 - `src/acp/*` – ACP server + translation layer
 - `src/pi-rpc/*` – pi subprocess wrapper (RPC protocol)
 
+Maintenance documentation starts at [`docs/index.md`](docs/index.md). Changes to command dispatch, prompt completion, or extension UI must preserve [`src/acp/SPEC.md`](src/acp/SPEC.md).
+
 ## Limitations
 
 - No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
 - Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
-- Queue is implemented client-side and should work like pi's `one-at-a-time`
-- ~~ACP clients don't yet suport session history, but ACP sessions from `pi-acp` can be `/resume`d in pi directly~~
+- Queue is implemented client-side and should work like pi's `one-at-a-time`.
+- ACP currently has no general text-entry or arbitrary Pi component surface. Pi extension `select`/`confirm` requests can use ACP permissions; `input`/`editor` are cancelled by this adapter unless the extension uses its own external UI backend. Fire-and-forget methods that have no ACP equivalent are safely ignored.
+- Work started only after an extension command handler has already returned cannot be reliably attached to the closed ACP prompt. Extensions should await work that belongs to the current turn.
 
 ## License
 

@@ -29,6 +29,8 @@ export class FakePiRpcProcess {
   readonly prompts: Array<{ message: string; attachments: unknown[] }> = []
   readonly extensionUiResponses: unknown[] = []
   abortCount = 0
+  state: Record<string, unknown> = {}
+  commands: unknown = { commands: [] }
 
   onEvent(handler: (ev: PiRpcEvent) => void): () => void {
     this.handlers.push(handler)
@@ -54,7 +56,11 @@ export class FakePiRpcProcess {
   }
 
   async getState(): Promise<any> {
-    return {}
+    return this.state
+  }
+
+  async getCommands(): Promise<any> {
+    return this.commands
   }
 
   async getAvailableModels(): Promise<any> {

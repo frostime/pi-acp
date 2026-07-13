@@ -8,6 +8,19 @@ export type PiRpcCommandInfo = {
   path?: unknown
 }
 
+export function extensionCommandNames(commands: PiRpcCommandInfo[]): Set<string> {
+  const names = new Set<string>()
+
+  for (const command of commands) {
+    if (command.source !== 'extension') continue
+
+    const name = typeof command.name === 'string' ? command.name.trim() : ''
+    if (name) names.add(name)
+  }
+
+  return names
+}
+
 function describeFallback(c: PiRpcCommandInfo): string {
   const source = typeof c.source === 'string' ? c.source : ''
   const location = typeof c.location === 'string' ? c.location : ''
