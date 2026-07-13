@@ -8,8 +8,8 @@ This is the `frostime/pi-acp` fork of [`svkozak/pi-acp`](https://github.com/svko
 
 ### Branch model
 
-- `upstream-main` — pristine mirror of `upstream/main` (MIT). **Never commit fork changes here.**
-- `main` / `frostime` — divergent fork branches (GPL-3.0-or-later), carry fork metadata + features.
+- `upstream-main` — pristine mirror of `upstream/main` (MIT), the upstream integration branch. **Never commit fork changes here.**
+- `main` — the fork's primary branch (GPL-3.0-or-later). Carries fork metadata + features; integrates upstream updates from `upstream-main`.
 
 `main` intentionally diverges from upstream, so GitHub "Sync fork" does not apply; apply upstream updates manually: `git fetch upstream` → ff-only merge `upstream/main` into `upstream-main` → merge `upstream-main` into `main` (resolve conflicts, keep GPL/fork content).
 
