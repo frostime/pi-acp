@@ -1,5 +1,11 @@
 # pi-acp
 
+> [!NOTE]
+> Forked from [svkozak/pi-acp](https://github.com/svkozak/pi-acp)
+> This fork modifies the original acp, adding support for PI extension command `/<command>`
+
+---
+
 ACP ([Agent Client Protocol](https://agentclientprotocol.com/overview/introduction)) adapter for [`pi`](https://github.com/earendil-works/pi) coding agent (fka shitty coding agent).
 
 `pi-acp` communicates **ACP JSON-RPC 2.0 over stdio** to an ACP client (e.g. Zed editor) and spawns `pi --mode rpc`, bridging requests/events between the two.
