@@ -2,6 +2,21 @@
 
 `pi-acp` is an Agent Client Protocol (ACP) adapter for Pi(`@earendil-works/pi-coding-agent`). It speaks ACP JSON-RPC over its own stdio and runs one `pi --mode rpc` subprocess per ACP session.
 
+## Fork & upstream maintenance
+
+This is the `frostime/pi-acp` fork of [`svkozak/pi-acp`](https://github.com/svkozak/pi-acp) (MIT), distributed under GPL-3.0-or-later. Original MIT license is preserved in `LICENSE-MIT`.
+
+### Branch model
+
+- `upstream-main` — pristine mirror of `upstream/main` (MIT). **Never commit fork changes here.**
+- `main` / `frostime` — divergent fork branches (GPL-3.0-or-later), carry fork metadata + features.
+
+`main` intentionally diverges from upstream, so GitHub "Sync fork" does not apply; apply upstream updates manually: `git fetch upstream` → ff-only merge `upstream/main` into `upstream-main` → merge `upstream-main` into `main` (resolve conflicts, keep GPL/fork content).
+
+### Contributing back to upstream
+
+Branch off pristine `upstream-main` and cherry-pick **only** the functional commits (no package name / license / fork doc changes) with cleaning of dirty part, so the PR stays MIT-clean.
+
 ## Read before changing code
 
 Start with [`docs/index.md`](docs/index.md). Read the documents selected there rather than reconstructing cross-cutting behavior from scattered code.

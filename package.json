@@ -2,7 +2,7 @@
   "name": "@frostime/pi-acp",
   "version": "0.1.0",
   "description": "ACP adapter for pi coding agent",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "author": "frostime <frostime@foxmail.com>",
   "repository": {
     "type": "git",

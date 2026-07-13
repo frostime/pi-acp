@@ -1,8 +1,8 @@
 # pi-acp
 
 > [!NOTE]
-> Forked from [svkozak/pi-acp](https://github.com/svkozak/pi-acp)
-> This fork modifies the original acp, adding support for PI extension command `/<command>`
+> Forked from [svkozak/pi-acp](https://github.com/svkozak/pi-acp) (MIT, © 2025 Sergii Kozak); this is a frostime-maintained fork distributed under **GPL-3.0-or-later**.
+> It adds support for the PI extension command `/<command>` and hardens the extension command lifecycle. The original MIT license is preserved in [`LICENSE-MIT`](LICENSE-MIT); see [License](#license).
 
 ---
 
@@ -208,4 +208,4 @@ Maintenance documentation starts at [`docs/index.md`](docs/index.md). Changes to
 
 ## License
 
-MIT (see [LICENSE](LICENSE)).
+This combined work is distributed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`); see [`LICENSE`](LICENSE). This fork is derived from [svkozak/pi-acp](https://github.com/svkozak/pi-acp), originally MIT © 2025 Sergii Kozak; that license and notice are preserved unchanged in [`LICENSE-MIT`](LICENSE-MIT), as required by the MIT redistribution terms. Code authored by this fork's maintainer ships under GPL-3.0-or-later here, and is additionally licensable as MIT for back-porting to upstream via the pristine `upstream-main` branch (see [`AGENTS.md`](AGENTS.md)).
