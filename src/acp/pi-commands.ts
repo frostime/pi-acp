@@ -8,6 +8,10 @@ export type PiRpcCommandInfo = {
   path?: unknown
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export function extensionCommandNames(commands: PiRpcCommandInfo[]): Set<string> {
   const names = new Set<string>()
 
@@ -42,12 +46,14 @@ export function toAvailableCommandsFromPiGetCommands(
   const enableSkillCommands = opts?.enableSkillCommands ?? true
   const includeExtensionCommands = opts?.includeExtensionCommands ?? false
 
-  const root: any = data
-  const commandsRaw: PiRpcCommandInfo[] = Array.isArray(root?.commands)
+  const root = isRecord(data) ? data : null
+  const nestedData = root && isRecord(root.data) ? root.data : null
+  const sourceCommands: unknown[] = Array.isArray(root?.commands)
     ? root.commands
-    : Array.isArray(root?.data?.commands)
-      ? root.data.commands
+    : Array.isArray(nestedData?.commands)
+      ? nestedData.commands
       : []
+  const commandsRaw: PiRpcCommandInfo[] = sourceCommands.filter(isRecord)
 
   const out: AvailableCommand[] = []
 

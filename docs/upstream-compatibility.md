@@ -70,13 +70,14 @@ Review each checkpoint whenever the installed Pi package changes materially.
 
 | Checkpoint                  | Current adapter assumption                                                                                        | Local dependency                              |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `get_commands` envelope     | Commands may be top-level or under `data`; unknown metadata is tolerated                                          | `/src/acp/pi-commands.ts`                     |
+| `get_commands` envelope     | Commands may be top-level or under `data`; malformed non-object entries and unknown metadata are tolerated        | `/src/acp/pi-commands.ts`                     |
 | Command source              | Extension ownership is identified by `source === "extension"`                                                     | command priority and turn classification      |
 | Command ordering/duplicates | Pi returns multiple source types; local first-wins merge gives extension commands priority over adapter built-ins | `/src/acp/agent.ts → mergeCommands()`         |
 | Direct extension execution  | Pi awaits the extension handler before the direct command's RPC prompt response returns                           | external TUI and pure-extension completion    |
 | Normal prompt response      | The RPC response is not the final agent completion signal                                                         | turn state machine                            |
 | Agent finality              | `agent_settled` is stronger than `agent_end`; retrying `agent_end` is not final                                   | `/src/acp/session.ts`                         |
 | Busy state                  | `isStreaming`, `isCompacting`, and `pendingMessageCount` indicate observable pending work                         | idle reconciliation                           |
+| Extension failures          | Command handler failures may arrive as `extension_error` while the RPC prompt response still succeeds             | visible failure reporting and internal result |
 | UI response classes         | Dialog methods require responses; fire-and-forget methods do not                                                  | extension UI router                           |
 | UI timeout/cancellation     | Pi may resolve timed dialogs and abort work independently of the ACP client's UI                                  | cancellation and late-response handling       |
 | Event/request correlation   | Events do not necessarily carry an ACP turn ID                                                                    | local monotonically increasing turn ID guards |

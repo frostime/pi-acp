@@ -49,6 +49,7 @@ type PendingTurn = {
   promptResponseReceived: boolean
   sawAgentStart: boolean
   sawAgentEnd: boolean
+  extensionError?: string
   checkingCompletion: boolean
   finishing: boolean
 }
@@ -313,6 +314,7 @@ export class PiAcpSession {
   private piCommandsLoaded = false
   private piCommandsLoadPromise: Promise<void> | null = null
   private extensionCommands = new Set<string>()
+  private cancelEpoch = 0
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -396,6 +398,14 @@ export class PiAcpSession {
     return name !== null && this.extensionCommands.has(name)
   }
 
+  getCancelEpoch(): number {
+    return this.cancelEpoch
+  }
+
+  wasCancelledSince(epoch: number): boolean {
+    return this.cancelEpoch !== epoch
+  }
+
   /**
    * Best-effort attempt to send startup info outside of a prompt turn.
    * Some clients (e.g. Zed) may only render agent messages once the UI is ready;
@@ -411,8 +421,10 @@ export class PiAcpSession {
     })
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async prompt(message: string, images: unknown[] = [], requestCancelEpoch = this.cancelEpoch): Promise<StopReason> {
     if (leadingSlashCommandName(message)) await this.ensurePiCommandsLoaded()
+
+    if (this.wasCancelledSince(requestCancelEpoch)) return 'cancelled'
 
     const kind: TurnKind = this.isExtensionCommand(message) ? 'extension' : 'agent'
     // Pi expands extension commands itself. File prompt templates are expanded adapter-side.
@@ -454,6 +466,7 @@ export class PiAcpSession {
 
   async cancel(): Promise<void> {
     // Cancel current and clear any queued prompts.
+    this.cancelEpoch += 1
     this.cancelRequested = true
 
     if (this.turnQueue.length) {
@@ -599,6 +612,9 @@ export class PiAcpSession {
     initial.checkingCompletion = true
 
     try {
+      let successfulStateChecks = 0
+      let lastStateError: unknown = null
+
       for (const delayMs of EXTENSION_IDLE_CHECK_DELAYS_MS) {
         if (delayMs > 0) await sleep(delayMs)
 
@@ -610,10 +626,23 @@ export class PiAcpSession {
         try {
           const state = await this.proc.getState()
           if (isPiStateBusy(state)) return
-        } catch {
-          // Local event state plus a short grace period is still a useful fallback
-          // for older or temporarily unavailable Pi RPC implementations.
+          successfulStateChecks += 1
+        } catch (err) {
+          lastStateError = err
         }
+      }
+
+      if (successfulStateChecks === 0) {
+        const detail = lastStateError instanceof Error ? `: ${lastStateError.message}` : ''
+        this.emit({
+          sessionUpdate: 'agent_message_chunk',
+          content: {
+            type: 'text',
+            text: `Unable to confirm that Pi became idle because get_state failed${detail}`
+          } satisfies ContentBlock
+        })
+        await this.failTurn(turnId, lastStateError ?? new Error('Unable to query Pi state'))
+        return
       }
 
       const turn = this.pendingTurn
@@ -622,7 +651,7 @@ export class PiAcpSession {
       if (turn.kind === 'extension' && !turn.promptResponseReceived) return
       if (turn.kind === 'agent' && !turn.sawAgentEnd) return
 
-      const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+      const reason: StopReason = this.cancelRequested ? 'cancelled' : turn.extensionError ? 'error' : 'end_turn'
       await this.finishTurn(turnId, reason)
     } finally {
       const turn = this.pendingTurn
@@ -990,6 +1019,25 @@ export class PiAcpSession {
         break
       }
 
+      case 'extension_error': {
+        const error = stringProp(ev, 'error') ?? 'Unknown Pi extension error'
+        const extensionPath = stringProp(ev, 'extensionPath')
+        const eventName = stringProp(ev, 'event')
+        const details = [extensionPath, eventName].filter((value): value is string => Boolean(value)).join(' / ')
+
+        this.emit({
+          sessionUpdate: 'agent_message_chunk',
+          content: {
+            type: 'text',
+            text: `Pi extension error${details ? ` (${details})` : ''}: ${error}`
+          } satisfies ContentBlock
+        })
+
+        const turn = this.pendingTurn
+        if (eventName === 'command' && turn?.kind === 'extension') turn.extensionError = error
+        break
+      }
+
       case 'agent_start': {
         this.inAgentLoop = true
         if (this.pendingTurn) this.pendingTurn.sawAgentStart = true
@@ -1024,7 +1072,7 @@ export class PiAcpSession {
         if (!turn || !turn.sawAgentStart || !turn.sawAgentEnd) break
         if (turn.kind === 'extension' && !turn.promptResponseReceived) break
 
-        const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+        const reason: StopReason = this.cancelRequested ? 'cancelled' : turn.extensionError ? 'error' : 'end_turn'
         void this.finishTurn(turn.id, reason)
         break
       }

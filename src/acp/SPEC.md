@@ -52,6 +52,7 @@ Command discovery uses Pi `get_commands`; normalization is owned by `/src/acp/pi
 The adapter must:
 
 - accept both a top-level `commands` array and the legacy nested `data.commands` shape;
+- discard non-object command entries at the RPC boundary instead of allowing one malformed entry to invalidate the registry;
 - retain the raw `source` and `name` needed to distinguish extension commands from prompts and skills;
 - tolerate additional or renamed metadata fields that are not required for dispatch;
 - advertise extension commands after `session/new` and `session/load` have returned enough information for the client to recognize the session;
@@ -118,7 +119,9 @@ A direct extension handler may finish without `agent_start` or `agent_end`. The 
 2. no agent loop or tool call is active locally;
 3. Pi `get_state` does not report streaming, compaction, or pending messages across the configured short reconciliation window.
 
-The reconciliation window is a race guard, not proof that arbitrary future work will never start.
+The reconciliation window is a race guard, not proof that arbitrary future work will never start. A failed `get_state` request does not prove that Pi is idle. The adapter may retry transient failures, but it must observe at least one successful idle state before returning `end_turn`; if every bounded query fails, the turn fails rather than being reported as successful.
+
+A command-scoped Pi `extension_error` must be surfaced to the ACP client. Once the corresponding direct handler response returns, the internal turn result is `error`; unrelated extension lifecycle errors may be displayed without changing the active turn's result. ACP clients without an `error` stop reason still receive the visible error message.
 
 ### Extension turns that start an agent run
 
@@ -148,6 +151,7 @@ At the time the handler returns, Pi can truthfully report idle and the ACP promp
 - The active turn is cleared before the next queued turn starts.
 - On prompt failure, queued prompts are not started automatically because the Pi subprocess may be unhealthy.
 - Cancellation clears queued prompts and sends Pi `abort` for the active turn. The final stop reason is `cancelled` when cancellation was requested.
+- A prompt waiting for command discovery is also cancellable. Cancellation must invalidate the request before any adapter built-in or Pi prompt is executed, even though it has not entered the active-turn queue yet.
 
 ## Extension UI protocol
 
@@ -184,6 +188,7 @@ When modifying this module:
 The focused tests must continue to prove:
 
 - extension commands are advertised for new and loaded sessions;
+- malformed `get_commands` entries are ignored without losing valid extension ownership metadata;
 - extension commands win collisions with adapter built-ins and file prompts;
 - recognized extension text is forwarded unchanged;
 - pure extension commands complete without `agent_end`;
@@ -191,6 +196,9 @@ The focused tests must continue to prove:
 - retry/compaction settlement is respected;
 - handler completion and agent settlement can arrive in either order;
 - stale reconciliation cannot finish the next queued turn;
+- cancellation during command discovery prevents both adapter built-ins and Pi prompts from starting;
+- command-scoped `extension_error` is visible and does not become a silent successful turn;
+- state reconciliation retries transient failures and cannot succeed when every state query fails;
 - fire-and-forget UI receives no response;
 - dialog UI receives at most one response.
 

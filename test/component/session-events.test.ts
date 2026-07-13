@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { PiAcpSession } from '../../src/acp/session.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
@@ -143,7 +143,9 @@ test('PiAcpSession: emits tool locations from pi path args', async () => {
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
-  assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: `${process.cwd()}/src/acp/session.ts` }])
+  assert.deepEqual((conn.updates[0]!.update as any).locations, [
+    { path: resolve(process.cwd(), 'src/acp/session.ts') }
+  ])
 })
 
 test('PiAcpSession: handles extension select via ACP permission request', async () => {
@@ -1000,4 +1002,101 @@ test('PiAcpSession: extension waits for its RPC prompt response even if agent_se
   releasePromptResponse()
 
   assert.equal(await prompt, 'end_turn')
+})
+
+test('PiAcpSession: command-scoped extension errors are visible and finish the internal turn as error', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  let releasePromptResponse: (() => void) | undefined
+  proc.prompt = async (message: string, attachments: unknown[]) => {
+    proc.prompts.push({ message, attachments })
+    await new Promise<void>(resolve => {
+      releasePromptResponse = resolve
+    })
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  session.setPiCommands([{ name: 'boom', description: 'Throw', source: 'extension' }])
+
+  const prompt = session.prompt('/boom')
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  proc.emit({
+    type: 'extension_error',
+    extensionPath: 'command:boom',
+    event: 'command',
+    error: 'exploded'
+  })
+
+  assert.ok(releasePromptResponse)
+  releasePromptResponse()
+
+  assert.equal(await prompt, 'error')
+  assert.equal(
+    conn.updates.some(message =>
+      JSON.stringify(message.update).includes('Pi extension error (command:boom / command): exploded')
+    ),
+    true
+  )
+})
+
+test('PiAcpSession: retries state queries and does not report success when every query fails', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  let stateQueries = 0
+  proc.getState = async () => {
+    stateQueries += 1
+    throw new Error('state unavailable')
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  session.setPiCommands([{ name: 'inspect', description: 'Inspect', source: 'extension' }])
+
+  assert.equal(await session.prompt('/inspect'), 'error')
+  assert.equal(stateQueries, 3)
+  assert.equal(
+    conn.updates.some(message =>
+      JSON.stringify(message.update).includes('Unable to confirm that Pi became idle because get_state failed')
+    ),
+    true
+  )
+})
+
+test('PiAcpSession: a transient state-query failure can recover on a later idle observation', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  let stateQueries = 0
+  proc.getState = async () => {
+    stateQueries += 1
+    if (stateQueries === 1) throw new Error('transient state error')
+    return { isStreaming: false, isCompacting: false, pendingMessageCount: 0 }
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+  session.setPiCommands([{ name: 'inspect', description: 'Inspect', source: 'extension' }])
+
+  assert.equal(await session.prompt('/inspect'), 'end_turn')
+  assert.equal(stateQueries, 3)
 })

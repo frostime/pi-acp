@@ -93,3 +93,49 @@ test('PiAcpAgent: Pi extension command takes priority over same-name adapter bui
   assert.equal(forwarded, '/name extension-value')
   assert.equal(setNameCalled, false)
 })
+
+test('PiAcpAgent: cancel during command discovery prevents an adapter built-in from running', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess() as any
+  let setNameCalled = false
+  let cancelEpoch = 0
+  let releaseCommands: (() => void) | undefined
+
+  proc.setSessionName = async () => {
+    setNameCalled = true
+  }
+
+  const session = {
+    sessionId: 's1',
+    proc,
+    getCancelEpoch: () => cancelEpoch,
+    wasCancelledSince: (epoch: number) => cancelEpoch !== epoch,
+    ensurePiCommandsLoaded: async () =>
+      new Promise<void>(resolve => {
+        releaseCommands = resolve
+      }),
+    isExtensionCommand: () => false,
+    cancel: async () => {
+      cancelEpoch += 1
+    },
+    prompt: async () => 'end_turn',
+    wasCancelRequested: () => true
+  }
+
+  const agent = new PiAcpAgent(asAgentConn(conn))
+  ;(agent as any).sessions = new FakeSessions(session) as any
+
+  const prompt = agent.prompt({
+    sessionId: 's1',
+    prompt: [{ type: 'text', text: '/name Should Not Run' }]
+  } as any)
+
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await agent.cancel({ sessionId: 's1' } as any)
+
+  assert.ok(releaseCommands)
+  releaseCommands()
+
+  assert.equal((await prompt).stopReason, 'cancelled')
+  assert.equal(setNameCalled, false)
+})

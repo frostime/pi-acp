@@ -40,3 +40,34 @@ test('PiAcpSession: cancel clears queued prompts', async () => {
   // queue should have been cleared, so no further prompt started
   assert.equal(proc.prompts.length, 1)
 })
+
+test('PiAcpSession: cancel during command discovery prevents the slash command from starting', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  let releaseCommands: ((value: unknown) => void) | undefined
+  proc.getCommands = async () =>
+    new Promise(resolve => {
+      releaseCommands = resolve
+    })
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const prompt = session.prompt('/inspect')
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  await session.cancel()
+  assert.ok(releaseCommands)
+  releaseCommands({ commands: [{ name: 'inspect', source: 'extension' }] })
+
+  assert.equal(await prompt, 'cancelled')
+  assert.deepEqual(proc.prompts, [])
+  assert.equal(proc.abortCount, 1)
+})

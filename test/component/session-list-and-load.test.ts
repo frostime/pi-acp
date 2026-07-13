@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { PiAcpAgent } from '../../src/acp/agent.js'
+import { SessionStore } from '../../src/acp/session-store.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 
 // We mock PiRpcProcess.spawn so loadSession doesn't actually spawn `pi`.
@@ -60,6 +61,8 @@ test('PiAcpAgent: listSessions lists pi sessions and loadSession replays history
   try {
     const conn = new FakeAgentSideConnection()
     const agent = new PiAcpAgent(asAgentConn(conn))
+    ;(agent as any).store = new SessionStore(join(root, 'pi-acp-session-map.json'))
+    const forwardedPrompts: string[] = []
 
     // 1) list sessions
     const listed = await agent.listSessions({ cwd: null, cursor: null, _meta: null } as any)
@@ -74,9 +77,8 @@ test('PiAcpAgent: listSessions lists pi sessions and loadSession replays history
     const originalSpawn = PiRpcProcess.spawn
 
     ;(PiRpcProcess as any).spawn = async (params: any) => {
-      // ensure loadSession resolves to some jsonl that ends with our expected filename
-      assert.ok(typeof params.sessionPath === 'string')
-      assert.ok(params.sessionPath.endsWith('/0000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl'))
+      // Ensure loadSession resolves the exact platform-native session path created above.
+      assert.equal(params.sessionPath, sessionFile)
 
       return {
         onEvent: () => () => {
@@ -89,7 +91,14 @@ test('PiAcpAgent: listSessions lists pi sessions and loadSession replays history
           ]
         }),
         getAvailableModels: async () => ({ models: [] }),
-        getState: async () => ({ thinkingLevel: 'medium' })
+        getState: async () => ({ thinkingLevel: 'medium' }),
+        getCommands: async () => ({
+          commands: [{ name: 'name', description: 'Extension-owned name command', source: 'extension' }]
+        }),
+        prompt: async (message: string) => {
+          forwardedPrompts.push(message)
+        },
+        abort: async () => {}
       } as any
     }
 
@@ -104,11 +113,29 @@ test('PiAcpAgent: listSessions lists pi sessions and loadSession replays history
 
       assert.ok(texts.some(t => t.kind === 'user_message_chunk' && t.text === 'Hello'))
       assert.ok(texts.some(t => t.kind === 'agent_message_chunk' && t.text === 'Hi there!'))
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+      const commandUpdate = conn.updates.find(
+        item =>
+          item.sessionId === 'sess-1' &&
+          item.update.sessionUpdate === 'available_commands_update' &&
+          (item.update as any).availableCommands.some((command: any) => command.name === 'name')
+      )
+      assert.ok(commandUpdate)
+
+      const promptResult = await agent.prompt({
+        sessionId: 'sess-1',
+        prompt: [{ type: 'text', text: '/name extension value' }]
+      } as any)
+
+      assert.equal(promptResult.stopReason, 'end_turn')
+      assert.deepEqual(forwardedPrompts, ['/name extension value'])
     } finally {
       PiRpcProcess.spawn = originalSpawn
     }
   } finally {
     if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
     else process.env.PI_CODING_AGENT_DIR = oldEnv
+    rmSync(root, { recursive: true, force: true })
   }
 })

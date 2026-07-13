@@ -30,3 +30,44 @@ test('toAvailableCommandsFromPiGetCommands: hides extension commands by default 
   const noSkills = toAvailableCommandsFromPiGetCommands(data, { enableSkillCommands: false }).commands
   assert.deepEqual(noSkills, [{ name: 'y', description: '(prompt:project)' }])
 })
+
+test('toAvailableCommandsFromPiGetCommands: normalizes malformed entries at the RPC boundary', () => {
+  const parsed = toAvailableCommandsFromPiGetCommands(
+    {
+      commands: [
+        null,
+        'bad',
+        42,
+        [],
+        {},
+        { name: 'inspect', description: 'Inspect', source: 'extension' },
+        { name: 'prompt-one', source: 'prompt', location: 'project' }
+      ]
+    },
+    { includeExtensionCommands: true }
+  )
+
+  assert.deepEqual(parsed.commands, [
+    { name: 'inspect', description: 'Inspect' },
+    { name: 'prompt-one', description: '(prompt:project)' }
+  ])
+  assert.deepEqual(parsed.raw, [
+    {},
+    { name: 'inspect', description: 'Inspect', source: 'extension' },
+    { name: 'prompt-one', source: 'prompt', location: 'project' }
+  ])
+})
+
+test('toAvailableCommandsFromPiGetCommands: accepts the legacy data.commands envelope', () => {
+  const parsed = toAvailableCommandsFromPiGetCommands(
+    {
+      data: {
+        commands: [{ name: 'inspect', source: 'extension' }]
+      }
+    },
+    { includeExtensionCommands: true }
+  )
+
+  assert.deepEqual(parsed.commands, [{ name: 'inspect', description: '(extension)' }])
+  assert.deepEqual(parsed.raw, [{ name: 'inspect', source: 'extension' }])
+})

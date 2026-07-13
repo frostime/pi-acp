@@ -52,19 +52,7 @@ npm install -g @earendil-works/pi-coding-agent
 
 ### Add pi-acp to your ACP client, e.g. [Zed](https://zed.dev/docs/agents/external-agents/)
 
-#### Using ACP Registry in Zed or other clients that support it:
-
-In Zed launch the registry with `zed: acp registry` command and select `pi ACP` adapter from the list. This will automatically add the agent server configuration to your `settings.json` and keep it up to date:
-
-```json
-  "agent_servers": {
-    "pi-acp": {
-      "type": "registry",
-    },
-  }
-```
-
-#### Using with `npx` (no global install needed, always loads the latest version):
+#### Using this fork with `npx` (no global install needed, always loads the latest version)
 
 Add the following to your Zed `settings.json`:
 
@@ -73,7 +61,7 @@ Add the following to your Zed `settings.json`:
     "pi": {
       "type": "custom",
       "command": "npx",
-      "args": ["-y", "pi-acp"],
+      "args": ["-y", "@frostime/pi-acp"],
       "env": {}
     }
   }
@@ -82,7 +70,7 @@ Add the following to your Zed `settings.json`:
 #### Global install
 
 ```bash
-npm install -g pi-acp
+npm install -g @frostime/pi-acp
 ```
 
 ```json
@@ -95,6 +83,10 @@ npm install -g pi-acp
     }
   }
 ```
+
+#### ACP Registry
+
+The current `pi ACP` entry in the ACP Registry points to the upstream `pi-acp` package and does not install this fork. Use the scoped `npx`, global-install, or source configuration above until this fork has its own registry entry.
 
 #### From source
 

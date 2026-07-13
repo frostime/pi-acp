@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PiAcpAgent } from '../../src/acp/agent.js'
@@ -16,8 +16,9 @@ class FakeSessions {
   closeAllExcept() {}
 }
 
-test('PiAcpAgent: advertises Pi extension commands and caches their metadata', async () => {
+test('PiAcpAgent: advertises Pi extension commands and caches their metadata', async t => {
   const cwd = mkdtempSync(join(tmpdir(), 'pi-acp-extension-commands-'))
+  t.after(() => rmSync(cwd, { recursive: true, force: true }))
   mkdirSync(join(cwd, '.pi'), { recursive: true })
   writeFileSync(join(cwd, '.pi', 'settings.json'), JSON.stringify({ quietStartup: true }), 'utf8')
 

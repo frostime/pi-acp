@@ -363,14 +363,13 @@ export class PiAcpAgent implements ACPAgent {
           updateNotice
         })
 
-    if (preludeText)
-      session.setStartupInfo(preludeText)
+    if (preludeText) session.setStartupInfo(preludeText)
 
-      // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
-      // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
-      // It does NOT affect other client windows because they run in separate agent processes.
-      //
-      // (Tests sometimes stub out `this.sessions`, so guard the call.)
+    // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
+    // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
+    // It does NOT affect other client windows because they run in separate agent processes.
+    //
+    // (Tests sometimes stub out `this.sessions`, so guard the call.)
     ;(this.sessions as any).closeAllExcept?.(session.sessionId)
 
     const response = {
@@ -437,11 +436,15 @@ export class PiAcpAgent implements ACPAgent {
     const session = await this.restoreSession(params.sessionId)
 
     const { message, images } = promptToPiMessage(params.prompt)
+    const requestCancelEpoch = (session as any).getCancelEpoch?.() ?? 0
 
     // Built-in ACP slash command handling (headless-friendly subset).
     // Pi extension commands take priority when they collide with adapter built-ins.
     if (images.length === 0 && message.trimStart().startsWith('/')) {
       await (session as any).ensurePiCommandsLoaded?.()
+      if ((session as any).wasCancelledSince?.(requestCancelEpoch) === true) {
+        return { stopReason: 'cancelled' }
+      }
       const isPiExtensionCommand = (session as any).isExtensionCommand?.(message) === true
 
       const trimmed = message.trim()
@@ -883,7 +886,7 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    const result = await session.prompt(message, images, requestCancelEpoch)
 
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
