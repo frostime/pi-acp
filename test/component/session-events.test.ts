@@ -270,6 +270,57 @@ test('PiAcpSession: cancels unsupported input and editor extension UI requests w
   assert.match((conn.updates[1]!.update as any).content.text, /editor UI request is not supported/)
 })
 
+test('PiAcpSession: bridges setTitle extension UI request to session_info_update', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'extension_ui_request', id: 't1', method: 'setTitle', title: 'Renamed from extension' })
+  proc.emit({ type: 'extension_ui_request', id: 't2', method: 'setTitle' })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(proc.extensionUiResponses, [])
+  assert.equal(conn.updates.length, 1)
+  assert.deepEqual(conn.updates[0]!.update, {
+    sessionUpdate: 'session_info_update',
+    title: 'Renamed from extension'
+  })
+})
+
+test('PiAcpSession: bridges session_info_changed to session_info_update', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'session_info_changed', name: 'My Session' })
+  proc.emit({ type: 'session_info_changed' })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.updates.length, 1)
+  assert.deepEqual(conn.updates[0]!.update, {
+    sessionUpdate: 'session_info_update',
+    title: 'My Session'
+  })
+})
+
 test('PiAcpSession: emits agent_message_chunk for auto_retry_start with attempt/maxAttempts and rounded delay', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
@@ -919,7 +970,6 @@ test('PiAcpSession: fire-and-forget extension UI requests do not send responses'
   proc.emit({ type: 'extension_ui_request', id: 'n1', method: 'notify', message: 'hello' })
   proc.emit({ type: 'extension_ui_request', id: 's1', method: 'setStatus', statusKey: 'x', statusText: 'busy' })
   proc.emit({ type: 'extension_ui_request', id: 'w1', method: 'setWidget', widgetKey: 'x', widgetLines: ['x'] })
-  proc.emit({ type: 'extension_ui_request', id: 't1', method: 'setTitle', title: 'title' })
   proc.emit({ type: 'extension_ui_request', id: 'e1', method: 'set_editor_text', text: 'draft' })
 
   await new Promise(resolve => setTimeout(resolve, 0))

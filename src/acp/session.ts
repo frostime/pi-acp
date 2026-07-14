@@ -981,6 +981,17 @@ export class PiAcpSession {
         break
       }
 
+      case 'session_info_changed': {
+        const name = stringProp(ev, 'name')
+        if (name) {
+          this.emit({
+            sessionUpdate: 'session_info_update',
+            title: name
+          })
+        }
+        break
+      }
+
       case 'auto_retry_start': {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
@@ -1091,6 +1102,17 @@ export class PiAcpSession {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock
       })
+      return
+    }
+
+    if (method === 'setTitle') {
+      const title = stringProp(ev, 'title')
+      if (title) {
+        this.emit({
+          sessionUpdate: 'session_info_update',
+          title
+        })
+      }
       return
     }
 
