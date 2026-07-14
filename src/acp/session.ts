@@ -898,6 +898,17 @@ export class PiAcpSession {
       return
     }
 
+    if (method === 'setTitle') {
+      const title = stringProp(ev, 'title')
+      if (title) {
+        this.emit({
+          sessionUpdate: 'session_info_update',
+          title
+        })
+      }
+      return
+    }
+
     await this.proc.sendExtensionUiResponse({ id, cancelled: true })
   }
 
