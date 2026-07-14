@@ -143,9 +143,7 @@ test('PiAcpSession: emits tool locations from pi path args', async () => {
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
-  assert.deepEqual((conn.updates[0]!.update as any).locations, [
-    { path: resolve(process.cwd(), 'src/acp/session.ts') }
-  ])
+  assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: resolve(process.cwd(), 'src/acp/session.ts') }])
 })
 
 test('PiAcpSession: handles extension select via ACP permission request', async () => {
@@ -270,7 +268,7 @@ test('PiAcpSession: cancels unsupported input and editor extension UI requests w
   assert.match((conn.updates[1]!.update as any).content.text, /editor UI request is not supported/)
 })
 
-test('PiAcpSession: bridges setTitle extension UI request to session_info_update', async () => {
+test('PiAcpSession: ignores setTitle extension UI requests', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -289,11 +287,7 @@ test('PiAcpSession: bridges setTitle extension UI request to session_info_update
   await new Promise(r => setTimeout(r, 0))
 
   assert.deepEqual(proc.extensionUiResponses, [])
-  assert.equal(conn.updates.length, 1)
-  assert.deepEqual(conn.updates[0]!.update, {
-    sessionUpdate: 'session_info_update',
-    title: 'Renamed from extension'
-  })
+  assert.equal(conn.updates.length, 0)
 })
 
 test('PiAcpSession: bridges session_info_changed to session_info_update', async () => {

@@ -72,7 +72,7 @@ const EXTENSION_UI_RAW_INPUT_KEYS = ['title', 'message', 'options', 'placeholder
 const CHOICE_OPTION_PREFIX = 'choice-'
 const EXTENSION_IDLE_CHECK_DELAYS_MS = [0, 25, 75] as const
 const EXTENSION_DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor'])
-const EXTENSION_FIRE_AND_FORGET_METHODS = new Set(['notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text'])
+const EXTENSION_FIRE_AND_FORGET_METHODS = new Set(['notify', 'setStatus', 'setWidget', 'set_editor_text'])
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -1106,13 +1106,14 @@ export class PiAcpSession {
     }
 
     if (method === 'setTitle') {
-      const title = stringProp(ev, 'title')
-      if (title) {
-        this.emit({
-          sessionUpdate: 'session_info_update',
-          title
-        })
-      }
+      // ACP has no terminal-title update; revisit when a suitable client-facing mapping exists.
+      // const title = stringProp(ev, 'title')
+      // if (title) {
+      //   this.emit({
+      //     sessionUpdate: 'session_info_update',
+      //     title
+      //   })
+      // }
       return
     }
 
