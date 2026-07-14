@@ -1,3 +1,35 @@
+/**
+ * SPEC — SessionUpdatePump
+ *
+ * Purpose
+ * Pi can produce text, thought, and terminal deltas faster than an ACP client
+ * can render individual notifications. This module reduces that amplification
+ * without changing the concatenated content or the observable event order.
+ *
+ * Delivery contract
+ * - One writer serializes all session updates in FIFO order.
+ * - Only consecutive chunks with the same semantic kind may be coalesced.
+ *   Terminal chunks additionally require the same tool-call ID.
+ * - send() is an ordering barrier: buffered stream content is enqueued before
+ *   the non-coalescible update.
+ * - flush() enqueues the current chunk and waits for all delivery work that was
+ *   queued before the call.
+ * - dispose() abandons buffered and not-yet-started delivery work. An update
+ *   already being written may still complete.
+ * - Client delivery failures are contained here so a disconnected client
+ *   cannot leave an ACP prompt permanently unsettled.
+ *
+ * Boundaries
+ * The time and byte thresholds bound chunk granularity and latency; they do not
+ * impose hard backpressure on Pi stdout or cap the total queue if the client
+ * stops consuming. Pi event interpretation, turn completion, cancellation, and
+ * retry policy remain owned by PiAcpSession.
+ *
+ * Change rules
+ * Preserve lossless concatenation, FIFO barriers, terminal tool identity, and
+ * prompt-completion flushing. A new coalescing rule requires tests proving both
+ * content equivalence and ordering across adjacent structural updates.
+ */
 import type { AgentSideConnection, SessionUpdate } from '@agentclientprotocol/sdk'
 import { bashTerminalOutputMeta } from './translate/bash.js'
 
