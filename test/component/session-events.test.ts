@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { PiAcpSession } from '../../src/acp/session.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
-test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
+test('PiAcpSession: coalesces adjacent text_delta events', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -21,20 +21,49 @@ test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
 
   proc.emit({
     type: 'message_update',
-    assistantMessageEvent: { type: 'text_delta', delta: 'hi' }
+    assistantMessageEvent: { type: 'text_delta', delta: 'hello' }
   })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: ' world' } })
 
-  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 50))
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.sessionId, 's1')
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'hi' }
+    content: { type: 'text', text: 'hello world' }
   })
 })
 
-test('PiAcpSession: emits agent_thought_chunk for thinking_delta', async () => {
+test('PiAcpSession: legacy update mode sends every text_delta event', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [],
+    sessionUpdateMode: 'legacy'
+  })
+
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hello' } })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: ' world' } })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(
+    conn.updates.map(message => message.update),
+    [
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' world' } }
+    ]
+  )
+})
+
+test('PiAcpSession: coalesces adjacent thinking_delta events', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -49,10 +78,11 @@ test('PiAcpSession: emits agent_thought_chunk for thinking_delta', async () => {
 
   proc.emit({
     type: 'message_update',
-    assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking...' }
+    assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking' }
   })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: '...' } })
 
-  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 50))
 
   assert.equal(conn.updates.length, 1)
   assert.equal(conn.updates[0]!.sessionId, 's1')
@@ -79,6 +109,11 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
   proc.emit({
     type: 'tool_execution_update',
     toolCallId: 't1',
+    partialResult: { content: [{ type: 'text', text: 'run' }] }
+  })
+  proc.emit({
+    type: 'tool_execution_update',
+    toolCallId: 't1',
     partialResult: { content: [{ type: 'text', text: 'running' }] }
   })
   proc.emit({
@@ -88,7 +123,7 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
     result: { content: [{ type: 'text', text: 'done' }] }
   })
 
-  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 50))
 
   assert.equal(conn.updates.length, 3)
 
@@ -508,7 +543,7 @@ test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with
   proc.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 2, delayMs: 2000 } as any)
   proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'after' } })
 
-  await new Promise(r => setTimeout(r, 0))
+  await new Promise(r => setTimeout(r, 50))
 
   assert.deepEqual(
     conn.updates.map(u => u.update),

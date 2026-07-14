@@ -24,6 +24,7 @@ import {
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
+import { parseSessionUpdateMode } from './session-update-pump.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
@@ -120,7 +121,7 @@ const pkg = readNearestPackageJson(import.meta.url)
 
 export class PiAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
-  private readonly sessions = new SessionManager()
+  private readonly sessions: SessionManager
   private readonly store = new SessionStore()
   private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
 
@@ -133,6 +134,9 @@ export class PiAcpAgent implements ACPAgent {
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
+    this.sessions = new SessionManager({
+      sessionUpdateMode: parseSessionUpdateMode(process.env.PI_ACP_SESSION_UPDATE_MODE)
+    })
     void _config
   }
 
@@ -363,7 +367,9 @@ export class PiAcpAgent implements ACPAgent {
           updateNotice
         })
 
-    if (preludeText) session.setStartupInfo(preludeText)
+    if (preludeText) {
+      session.setStartupInfo(preludeText)
+    }
 
     // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
     // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.

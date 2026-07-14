@@ -15,6 +15,7 @@ import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/proces
 import { maybeAuthRequiredError } from './auth-required.js'
 import { extensionCommandNames, toAvailableCommandsFromPiGetCommands, type PiRpcCommandInfo } from './pi-commands.js'
 import { SessionStore } from './session-store.js'
+import { SessionUpdatePump, type SessionUpdateMode } from './session-update-pump.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   bashCommand,
@@ -195,6 +196,11 @@ function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCal
 export class SessionManager {
   private sessions = new Map<string, PiAcpSession>()
   private readonly store = new SessionStore()
+  private readonly sessionUpdateMode: SessionUpdateMode | undefined
+
+  constructor(options: { sessionUpdateMode?: SessionUpdateMode } = {}) {
+    this.sessionUpdateMode = options.sessionUpdateMode
+  }
 
   /** Dispose all sessions and their underlying pi subprocesses. */
   disposeAll(): void {
@@ -214,7 +220,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return
     try {
-      s.proc.dispose?.()
+      s.dispose()
     } catch {
       // ignore
     }
@@ -265,7 +271,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      sessionUpdateMode: this.sessionUpdateMode
     })
 
     this.sessions.set(sessionId, session)
@@ -292,7 +299,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      sessionUpdateMode: this.sessionUpdateMode
     })
 
     this.sessions.set(sessionId, session)
@@ -341,9 +349,7 @@ export class PiAcpSession {
   private bashToolCallIds = new Set<string>()
   private bashOutputSnapshots = new Map<string, string>()
 
-  // Ensure `session/update` notifications are sent in order and can be awaited
-  // before completing a `session/prompt` request.
-  private lastEmit: Promise<void> = Promise.resolve()
+  private readonly updates: SessionUpdatePump
   private usageRefreshId = 0
 
   constructor(opts: {
@@ -353,6 +359,7 @@ export class PiAcpSession {
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    sessionUpdateMode?: SessionUpdateMode
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -360,8 +367,14 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.updates = new SessionUpdatePump(this.conn, this.sessionId, { mode: opts.sessionUpdateMode })
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
+  }
+
+  dispose(): void {
+    this.updates.dispose()
+    this.proc.dispose?.()
   }
 
   setStartupInfo(text: string) {
@@ -521,22 +534,11 @@ export class PiAcpSession {
   }
 
   private emit(update: SessionUpdate): void {
-    // Serialize update delivery.
-    this.lastEmit = this.lastEmit
-      .then(() =>
-        this.conn.sessionUpdate({
-          sessionId: this.sessionId,
-          update
-        })
-      )
-      .catch(() => {
-        // Ignore notification errors (client may have gone away). We still want
-        // prompt completion.
-      })
+    this.updates.send(update)
   }
 
   private async flushEmits(): Promise<void> {
-    await this.lastEmit
+    await this.updates.flush()
   }
 
   private emitBashToolCall(params: {
@@ -571,6 +573,11 @@ export class PiAcpSession {
     const previous = this.bashOutputSnapshots.get(params.toolCallId) ?? ''
     const delta = bashOutputDelta(previous, text)
     this.bashOutputSnapshots.set(params.toolCallId, text)
+
+    if (params.status === 'in_progress') {
+      this.updates.appendTerminalOutput(params.toolCallId, delta)
+      return
+    }
 
     this.emit({
       sessionUpdate: 'tool_call_update',
@@ -752,20 +759,13 @@ export class PiAcpSession {
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
-        // Stream assistant text.
         if (ame?.type === 'text_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.updates.appendAgentMessage(ame.delta)
           break
         }
 
         if (ame?.type === 'thinking_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_thought_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.updates.appendAgentThought(ame.delta)
           break
         }
 
