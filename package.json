@@ -1,6 +1,6 @@
 {
   "name": "@frostime/pi-acp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ACP adapter for pi coding agent",
   "license": "GPL-3.0-or-later",
   "author": "frostime <frostime@foxmail.com>",
