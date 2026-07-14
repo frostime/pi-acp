@@ -35,6 +35,34 @@ test('PiAcpSession: coalesces adjacent text_delta events', async () => {
   })
 })
 
+test('PiAcpSession: legacy update mode sends every text_delta event', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [],
+    sessionUpdateMode: 'legacy'
+  })
+
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hello' } })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: ' world' } })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(
+    conn.updates.map(message => message.update),
+    [
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' world' } }
+    ]
+  )
+})
+
 test('PiAcpSession: coalesces adjacent thinking_delta events', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

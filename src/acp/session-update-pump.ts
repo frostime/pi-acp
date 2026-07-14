@@ -3,8 +3,17 @@
  *
  * Purpose
  * Pi can produce text, thought, and terminal deltas faster than an ACP client
- * can render individual notifications. This module reduces that amplification
- * without changing the concatenated content or the observable event order.
+ * can render individual notifications. Coalesced mode reduces that
+ * amplification without changing the concatenated content or the observable
+ * event order.
+ *
+ * Mode selection
+ * - PI_ACP_SESSION_UPDATE_MODE is read at ACP agent initialization. A session
+ *   cannot switch mode while it is active.
+ * - coalesced is the default. It groups compatible stream chunks by time and
+ *   byte limits.
+ * - legacy is a diagnostic and benchmark fallback. It sends every stream
+ *   delta through the same ordered writer without coalescing.
  *
  * Delivery contract
  * - One writer serializes all session updates in FIFO order.
@@ -38,15 +47,26 @@ type BufferedChunk =
   | { kind: 'agent-thought'; text: string; bytes: number }
   | { kind: 'terminal-output'; toolCallId: string; text: string; bytes: number }
 
-type SessionUpdatePumpOptions = {
+export type SessionUpdateMode = 'coalesced' | 'legacy'
+
+export type SessionUpdatePumpOptions = {
+  mode?: SessionUpdateMode
   flushDelayMs?: number
   maxBufferedBytes?: number
 }
 
+const DEFAULT_MODE: SessionUpdateMode = 'coalesced'
 const DEFAULT_FLUSH_DELAY_MS = 25
 const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024
 
+export function parseSessionUpdateMode(value: string | undefined): SessionUpdateMode {
+  if (value === undefined || value === 'coalesced') return 'coalesced'
+  if (value === 'legacy') return 'legacy'
+  throw new Error('PI_ACP_SESSION_UPDATE_MODE must be "coalesced" or "legacy"')
+}
+
 export class SessionUpdatePump {
+  private readonly mode: SessionUpdateMode
   private readonly flushDelayMs: number
   private readonly maxBufferedBytes: number
   private bufferedChunk: BufferedChunk | null = null
@@ -59,20 +79,21 @@ export class SessionUpdatePump {
     private readonly sessionId: string,
     options: SessionUpdatePumpOptions = {}
   ) {
+    this.mode = options.mode ?? DEFAULT_MODE
     this.flushDelayMs = options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS
     this.maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES
   }
 
   appendAgentMessage(text: string): void {
-    this.appendChunk({ kind: 'agent-message', text, bytes: Buffer.byteLength(text) })
+    this.appendStreamChunk({ kind: 'agent-message', text, bytes: Buffer.byteLength(text) })
   }
 
   appendAgentThought(text: string): void {
-    this.appendChunk({ kind: 'agent-thought', text, bytes: Buffer.byteLength(text) })
+    this.appendStreamChunk({ kind: 'agent-thought', text, bytes: Buffer.byteLength(text) })
   }
 
   appendTerminalOutput(toolCallId: string, text: string): void {
-    this.appendChunk({ kind: 'terminal-output', toolCallId, text, bytes: Buffer.byteLength(text) })
+    this.appendStreamChunk({ kind: 'terminal-output', toolCallId, text, bytes: Buffer.byteLength(text) })
   }
 
   send(update: SessionUpdate): void {
@@ -95,7 +116,16 @@ export class SessionUpdatePump {
     this.bufferedChunk = null
   }
 
-  private appendChunk(next: BufferedChunk): void {
+  private appendStreamChunk(next: BufferedChunk): void {
+    if (this.mode === 'legacy') {
+      this.send(toSessionUpdate(next))
+      return
+    }
+
+    this.appendCoalescedChunk(next)
+  }
+
+  private appendCoalescedChunk(next: BufferedChunk): void {
     if (this.disposed || next.text.length === 0) return
 
     if (this.bufferedChunk && canMerge(this.bufferedChunk, next)) {

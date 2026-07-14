@@ -15,7 +15,7 @@ import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/proces
 import { maybeAuthRequiredError } from './auth-required.js'
 import { extensionCommandNames, toAvailableCommandsFromPiGetCommands, type PiRpcCommandInfo } from './pi-commands.js'
 import { SessionStore } from './session-store.js'
-import { SessionUpdatePump } from './session-update-pump.js'
+import { SessionUpdatePump, type SessionUpdateMode } from './session-update-pump.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   bashCommand,
@@ -196,6 +196,11 @@ function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCal
 export class SessionManager {
   private sessions = new Map<string, PiAcpSession>()
   private readonly store = new SessionStore()
+  private readonly sessionUpdateMode: SessionUpdateMode | undefined
+
+  constructor(options: { sessionUpdateMode?: SessionUpdateMode } = {}) {
+    this.sessionUpdateMode = options.sessionUpdateMode
+  }
 
   /** Dispose all sessions and their underlying pi subprocesses. */
   disposeAll(): void {
@@ -266,7 +271,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      sessionUpdateMode: this.sessionUpdateMode
     })
 
     this.sessions.set(sessionId, session)
@@ -293,7 +299,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      sessionUpdateMode: this.sessionUpdateMode
     })
 
     this.sessions.set(sessionId, session)
@@ -352,6 +359,7 @@ export class PiAcpSession {
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    sessionUpdateMode?: SessionUpdateMode
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -359,7 +367,7 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
-    this.updates = new SessionUpdatePump(this.conn, this.sessionId)
+    this.updates = new SessionUpdatePump(this.conn, this.sessionId, { mode: opts.sessionUpdateMode })
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -567,7 +575,7 @@ export class PiAcpSession {
     this.bashOutputSnapshots.set(params.toolCallId, text)
 
     if (params.status === 'in_progress') {
-      if (delta) this.updates.appendTerminalOutput(params.toolCallId, delta)
+      this.updates.appendTerminalOutput(params.toolCallId, delta)
       return
     }
 

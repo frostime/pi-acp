@@ -15,6 +15,39 @@ test('SessionUpdatePump: reduces a large burst to byte-bounded updates without l
   assert.equal(conn.updates.map(message => (message.update as any).content.text).join(''), 'x'.repeat(10_000))
 })
 
+test('SessionUpdatePump: legacy mode sends every stream delta through the ordered writer', async () => {
+  const conn = new FakeAgentSideConnection()
+  const pump = new SessionUpdatePump(asAgentConn(conn), 's1', { mode: 'legacy', flushDelayMs: 60_000 })
+
+  pump.appendAgentMessage('')
+  pump.appendAgentMessage('one')
+  pump.appendAgentThought('thought')
+  pump.appendTerminalOutput('tool-1', 'output')
+  pump.appendTerminalOutput('tool-1', ' more')
+  await pump.flush()
+
+  assert.deepEqual(
+    conn.updates.map(message => message.update),
+    [
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'one' } },
+      { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thought' } },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tool-1',
+        status: 'in_progress',
+        _meta: { terminal_output: { terminal_id: 'tool-1', data: 'output' } }
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tool-1',
+        status: 'in_progress',
+        _meta: { terminal_output: { terminal_id: 'tool-1', data: ' more' } }
+      }
+    ]
+  )
+})
+
 test('SessionUpdatePump: flushes streamed content before a structural update', async () => {
   const conn = new FakeAgentSideConnection()
   const pump = new SessionUpdatePump(asAgentConn(conn), 's1', { flushDelayMs: 60_000 })

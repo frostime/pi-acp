@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node --import tsx --test test/**/*.test.ts",
+    "benchmark:session-update-pump": "node --expose-gc --import tsx benchmark/session-update-pump/run.ts",
     "smoke": "node scripts/smoke-acp.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
