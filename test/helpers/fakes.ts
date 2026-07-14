@@ -31,6 +31,7 @@ export class FakePiRpcProcess {
   abortCount = 0
   state: Record<string, unknown> = {}
   commands: unknown = { commands: [] }
+  sessionStats: unknown = {}
 
   onEvent(handler: (ev: PiRpcEvent) => void): () => void {
     this.handlers.push(handler)
@@ -69,6 +70,10 @@ export class FakePiRpcProcess {
 
   async getMessages(): Promise<any> {
     return { messages: [] }
+  }
+
+  async getSessionStats(): Promise<any> {
+    return this.sessionStats
   }
 }
 

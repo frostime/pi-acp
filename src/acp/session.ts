@@ -344,6 +344,7 @@ export class PiAcpSession {
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
+  private usageRefreshId = 0
 
   constructor(opts: {
     sessionId: string
@@ -489,6 +490,34 @@ export class PiAcpSession {
 
   wasCancelRequested(): boolean {
     return this.cancelRequested
+  }
+
+  async refreshUsage(): Promise<void> {
+    const refreshId = ++this.usageRefreshId
+
+    let stats: any
+    try {
+      stats = await this.proc.getSessionStats()
+    } catch {
+      return
+    }
+
+    if (refreshId !== this.usageRefreshId) return
+
+    const used = stats?.contextUsage?.tokens
+    const size = stats?.contextUsage?.contextWindow
+    if (!Number.isFinite(used) || used < 0 || !Number.isFinite(size) || size <= 0) return
+
+    const amount = stats?.cost
+    // Pi model prices and aggregated usage costs are denominated in USD.
+    const cost = Number.isFinite(amount) && amount >= 0 ? { amount, currency: 'USD' } : undefined
+
+    this.emit({
+      sessionUpdate: 'usage_update',
+      used,
+      size,
+      ...(cost ? { cost } : {})
+    })
   }
 
   private emit(update: SessionUpdate): void {
@@ -671,6 +700,7 @@ export class PiAcpSession {
     this.pendingTurn = null
     this.inAgentLoop = false
     turn.resolve(reason)
+    void this.refreshUsage()
 
     const next = this.turnQueue.shift()
     if (next) {

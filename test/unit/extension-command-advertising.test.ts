@@ -31,6 +31,7 @@ test('PiAcpAgent: advertises Pi extension commands and caches their metadata', a
   }
 
   let cachedCommands: unknown[] = []
+  let usageRefreshCount = 0
   const session = {
     sessionId: 's1',
     cwd,
@@ -52,6 +53,9 @@ test('PiAcpAgent: advertises Pi extension commands and caches their metadata', a
     },
     setStartupInfo() {},
     sendStartupInfoIfPending() {},
+    async refreshUsage() {
+      usageRefreshCount += 1
+    },
     setPiCommands(commands: unknown[]) {
       cachedCommands = commands
     }
@@ -71,6 +75,7 @@ test('PiAcpAgent: advertises Pi extension commands and caches their metadata', a
 
   const update = conn.updates.find(item => item.update.sessionUpdate === 'available_commands_update')
   assert.ok(update)
+  assert.equal(usageRefreshCount, 1)
   assert.deepEqual((update.update as any).availableCommands.slice(0, 2), [
     { name: 'inspect', description: 'Inspect the current agent' },
     { name: 'prompt-one', description: 'Prompt' }
