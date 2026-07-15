@@ -36,6 +36,10 @@ Mandatory reading by change type:
 
 If code and the SPEC disagree on externally observable behavior, compatibility, lifecycle, or invariants, stop and report the conflict before changing either one casually.
 
+## ACP protocol verification
+
+For ACP-facing changes, compare against the authoritative [ACP v1 schema](https://agentclientprotocol.com/protocol/v1/schema), not a client-specific behavior.
+
 ## Architecture boundaries
 
 - `src/acp/*`: ACP-facing behavior and translation.

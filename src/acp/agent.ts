@@ -26,7 +26,7 @@ import { SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { parseSessionUpdateMode } from './session-update-pump.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSession } from './pi-sessions.js'
+import { listPiSessions, findPiSession, type PiSessionListItem } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import {
@@ -131,6 +131,7 @@ export class PiAcpAgent implements ACPAgent {
 
   // Remember recent session cwd and use it as the default filter.
   private lastSessionCwd: string | null = null
+  private listedPiSessions: PiSessionListItem[] | null = null
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
@@ -159,13 +160,14 @@ export class PiAcpAgent implements ACPAgent {
     this.store.delete(sessionId)
   }
 
-  private findStoredSession(sessionId: string): { cwd: string; sessionFile: string } | null {
+  private findStoredSession(sessionId: string, cwd?: string): { cwd: string; sessionFile: string } | null {
     const stored = this.store.get(sessionId)
     if (stored?.cwd && stored?.sessionFile) {
       return { cwd: stored.cwd, sessionFile: stored.sessionFile }
     }
 
-    const piSession = findPiSession(sessionId)
+    const piSession =
+      this.listedPiSessions?.find(session => session.sessionId === sessionId) ?? findPiSession(sessionId, cwd)
     if (!piSession) return null
 
     this.store.upsert({
@@ -191,7 +193,7 @@ export class PiAcpAgent implements ACPAgent {
     if (inFlight) return inFlight
 
     const restorePromise = (async () => {
-      const stored = this.findStoredSession(sessionId)
+      const stored = this.findStoredSession(sessionId, opts?.cwd)
       if (!stored) {
         throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`)
       }
@@ -913,18 +915,21 @@ export class PiAcpAgent implements ACPAgent {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
     // emulate pi's `/resume` picker (project-scoped).
-    const all = listPiSessions()
-
-    const effectiveCwd = (params as any).cwd ?? this.lastSessionCwd
-    const filtered = effectiveCwd ? all.filter(s => s.cwd === effectiveCwd) : all
-
     // Cursor-based pagination (opaque cursor). For MVP, we use a simple numeric offset.
     // If cursor is invalid, treat as 0.
     const offset = params.cursor ? Number.parseInt(params.cursor, 10) : 0
     const start = Number.isFinite(offset) && offset > 0 ? offset : 0
+    const effectiveCwd = (params as any).cwd ?? this.lastSessionCwd
+
+    // Clients fetch each page separately. Reusing this snapshot keeps cursors stable
+    // and avoids rescanning every Pi session file for every page.
+    if (start === 0 || !this.listedPiSessions) {
+      this.listedPiSessions = listPiSessions(effectiveCwd)
+    }
+    const availableSessions = this.listedPiSessions
 
     const PAGE_SIZE = 50
-    const page = filtered.slice(start, start + PAGE_SIZE)
+    const page = availableSessions.slice(start, start + PAGE_SIZE)
 
     const sessions: SessionInfo[] = page.map(s => ({
       sessionId: s.sessionId,
@@ -933,7 +938,7 @@ export class PiAcpAgent implements ACPAgent {
       updatedAt: s.updatedAt
     }))
 
-    const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null
+    const nextCursor = start + PAGE_SIZE < availableSessions.length ? String(start + PAGE_SIZE) : null
 
     return { sessions, nextCursor, _meta: {} }
   }
@@ -950,7 +955,7 @@ export class PiAcpAgent implements ACPAgent {
 
     this.lastSessionCwd = params.cwd
 
-    const stored = this.findStoredSession(params.sessionId)
+    const stored = this.findStoredSession(params.sessionId, params.cwd)
     if (!stored) {
       throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
     }

@@ -9,6 +9,15 @@ not repeat the history of the [original project](https://github.com/svkozak/pi-a
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-16
+
+### Fixed
+
+- `session/list` reuses one snapshot across cursor pages, avoiding repeated scans of
+  the full Pi session history.
+- Project-scoped Pi session discovery now honors `PI_CODING_AGENT_SESSION_DIR` and
+  project-over-global `sessionDir` settings.
+
 ## [0.2.0] - 2026-07-14
 
 ### Added
@@ -61,7 +70,8 @@ not repeat the history of the [original project](https://github.com/svkozak/pi-a
 - Restored sessions republish extension-command discovery and retain the same
   dispatch behavior as new sessions.
 
-[Unreleased]: https://github.com/frostime/pi-acp/compare/d273167...main
+[Unreleased]: https://github.com/frostime/pi-acp/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/frostime/pi-acp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/frostime/pi-acp/compare/6a42226...d273167
 [0.1.2]: https://github.com/frostime/pi-acp/compare/4493355...6a42226
 [0.1.1]: https://github.com/frostime/pi-acp/compare/b3b90fd...4493355

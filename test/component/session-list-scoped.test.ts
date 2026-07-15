@@ -5,13 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { PiAcpAgent } from '../../src/acp/agent.js'
+import { getPiSessionsDir } from '../../src/acp/pi-sessions.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 
 test('PiAcpAgent: listSessions defaults to lastSessionCwd when cwd param is omitted', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-acp-test-'))
+  const oldEnv = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = root
 
-  const dirA = join(root, 'sessions', '--a--')
-  const dirB = join(root, 'sessions', '--b--')
+  const dirA = getPiSessionsDir('/cwd/a')
+  const dirB = getPiSessionsDir('/cwd/b')
   mkdirSync(dirA, { recursive: true })
   mkdirSync(dirB, { recursive: true })
 
@@ -57,9 +60,6 @@ test('PiAcpAgent: listSessions defaults to lastSessionCwd when cwd param is omit
     { encoding: 'utf8' }
   )
 
-  const oldEnv = process.env.PI_CODING_AGENT_DIR
-  process.env.PI_CODING_AGENT_DIR = root
-
   try {
     const conn = new FakeAgentSideConnection()
     const agent = new PiAcpAgent(asAgentConn(conn))
@@ -69,6 +69,53 @@ test('PiAcpAgent: listSessions defaults to lastSessionCwd when cwd param is omit
     const listed = await agent.listSessions({} as any)
     assert.equal(listed.sessions.length, 1)
     assert.equal(listed.sessions[0]?.sessionId, 'sess-a')
+  } finally {
+    if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = oldEnv
+  }
+})
+
+test('PiAcpAgent: listSessions keeps pagination stable while Pi history changes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pi-acp-test-'))
+  const oldEnv = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = root
+  const sessionsDir = getPiSessionsDir('/cwd/project')
+  mkdirSync(sessionsDir, { recursive: true })
+
+  const writeSession = (id: string, timestamp: string) => {
+    writeFileSync(
+      join(sessionsDir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'session', version: 3, id, timestamp, cwd: '/cwd/project' }),
+        JSON.stringify({
+          type: 'message',
+          id: `${id}-message`,
+          parentId: null,
+          timestamp,
+          message: { role: 'user', content: id }
+        })
+      ].join('\n') + '\n',
+      { encoding: 'utf8' }
+    )
+  }
+
+  for (let index = 0; index <= 50; index++) {
+    writeSession(`sess-${index}`, `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z`)
+  }
+
+  try {
+    const agent = new PiAcpAgent(asAgentConn(new FakeAgentSideConnection()))
+    const firstPage = await agent.listSessions({ cwd: '/cwd/project', cursor: null, _meta: null } as any)
+    assert.equal(firstPage.sessions.length, 50)
+    assert.equal(firstPage.nextCursor, '50')
+
+    writeSession('sess-new', '2026-01-01T00:01:00.000Z')
+
+    const secondPage = await agent.listSessions({ cwd: '/cwd/project', cursor: '50', _meta: null } as any)
+    assert.deepEqual(
+      secondPage.sessions.map(session => session.sessionId),
+      ['sess-0']
+    )
   } finally {
     if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
     else process.env.PI_CODING_AGENT_DIR = oldEnv
