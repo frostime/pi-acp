@@ -13,32 +13,77 @@ export type PiSessionListItem = {
 const DEFAULT_TAIL_BYTES = 256 * 1024
 const DEFAULT_HEAD_BYTES = 64 * 1024
 
+type PiSessionSearchScope = {
+  sessionsDir: string
+  filterCwd: string | null
+}
+
 function getPiAgentDir(): string {
   // pi supports overriding config dir via PI_CODING_AGENT_DIR.
   // See pi README.
   return process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), '.pi', 'agent')
 }
 
-function readSessionDirFromSettings(agentDir: string): string | null {
-  const settingsPath = join(agentDir, 'settings.json')
+function readJsonObject(path: string): Record<string, unknown> {
   try {
-    if (!existsSync(settingsPath)) return null
-    const raw = readFileSync(settingsPath, 'utf8')
-    const data = JSON.parse(raw) as unknown
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return null
-
-    const sessionDir = (data as Record<string, unknown>).sessionDir
-    if (typeof sessionDir !== 'string' || !sessionDir.trim()) return null
-
-    return isAbsolute(sessionDir) ? sessionDir : resolve(agentDir, sessionDir)
+    if (!existsSync(path)) return {}
+    const data = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    return data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : {}
   } catch {
-    return null
+    return {}
   }
 }
 
-export function getPiSessionsDir(): string {
+function resolvePiPath(path: string, baseDir: string): string {
+  const expanded =
+    path === '~' ? homedir() : path.startsWith('~/') || path.startsWith('~\\') ? join(homedir(), path.slice(2)) : path
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(baseDir, expanded)
+}
+
+function getConfiguredPiSessionDir(cwd: string | null, agentDir: string): string | null {
+  const envSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR
+  if (envSessionDir) return resolvePiPath(envSessionDir, process.cwd())
+
+  const globalSettings = readJsonObject(join(agentDir, 'settings.json'))
+  const projectSettings = cwd ? readJsonObject(join(resolve(cwd), '.pi', 'settings.json')) : {}
+  const projectSessionDir = projectSettings.sessionDir
+  const globalSessionDir = globalSettings.sessionDir
+
+  if (cwd && typeof projectSessionDir === 'string' && projectSessionDir.trim()) {
+    return resolvePiPath(projectSessionDir, join(resolve(cwd), '.pi'))
+  }
+  if (typeof globalSessionDir === 'string' && globalSessionDir.trim()) {
+    return resolvePiPath(globalSessionDir, agentDir)
+  }
+  return null
+}
+
+function getDefaultPiSessionsDir(cwd: string, agentDir: string): string {
+  const resolvedCwd = resolve(cwd)
+  const safeCwd = resolvedCwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')
+  return join(resolve(agentDir), 'sessions', `--${safeCwd}--`)
+}
+
+function getPiSessionSearchScope(cwd?: string | null): PiSessionSearchScope {
   const agentDir = getPiAgentDir()
-  return readSessionDirFromSettings(agentDir) ?? join(agentDir, 'sessions')
+  const configuredSessionsDir = getConfiguredPiSessionDir(cwd ?? null, agentDir)
+
+  if (!cwd) {
+    return { sessionsDir: configuredSessionsDir ?? join(agentDir, 'sessions'), filterCwd: null }
+  }
+
+  const defaultSessionsDir = getDefaultPiSessionsDir(cwd, agentDir)
+  const sessionsDir = configuredSessionsDir ?? defaultSessionsDir
+
+  // Pi only filters session headers when a configured directory differs from the cwd-derived default.
+  return {
+    sessionsDir,
+    filterCwd: resolve(sessionsDir) === resolve(defaultSessionsDir) ? null : resolve(cwd)
+  }
+}
+
+export function getPiSessionsDir(cwd?: string | null): string {
+  return getPiSessionSearchScope(cwd).sessionsDir
 }
 
 function walkJsonlFiles(dir: string, out: string[]) {
@@ -262,10 +307,10 @@ function pickFallbackTitleFromHead(path: string): string | null {
   return null
 }
 
-export function listPiSessions(): PiSessionListItem[] {
-  const sessionsDir = getPiSessionsDir()
+export function listPiSessions(cwd?: string | null): PiSessionListItem[] {
+  const searchScope = getPiSessionSearchScope(cwd)
   const files: string[] = []
-  walkJsonlFiles(sessionsDir, files)
+  walkJsonlFiles(searchScope.sessionsDir, files)
 
   const items: PiSessionListItem[] = []
 
@@ -274,6 +319,7 @@ export function listPiSessions(): PiSessionListItem[] {
     if (!first) continue
     const header = parseSessionHeader(first)
     if (!header) continue
+    if (searchScope.filterCwd && resolve(header.cwd) !== searchScope.filterCwd) continue
 
     let updatedAt: string | null = null
 
@@ -323,11 +369,11 @@ export function listPiSessions(): PiSessionListItem[] {
   return items
 }
 
-export function findPiSession(sessionId: string): PiSessionListItem | null {
-  const all = listPiSessions()
+export function findPiSession(sessionId: string, cwd?: string | null): PiSessionListItem | null {
+  const all = listPiSessions(cwd)
   return all.find(s => s.sessionId === sessionId) ?? null
 }
 
-export function findPiSessionFile(sessionId: string): string | null {
-  return findPiSession(sessionId)?.sessionFile ?? null
+export function findPiSessionFile(sessionId: string, cwd?: string | null): string | null {
+  return findPiSession(sessionId, cwd)?.sessionFile ?? null
 }
